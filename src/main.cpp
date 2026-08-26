@@ -31,8 +31,8 @@
 #include "WorkloadAnalyzer.h"
 #include "OptimizationEngine.h"
 
-static const char* LINE = "============================================================";
-static const char* THIN = "------------------------------------------------------------";
+static constexpr const char* LINE = "============================================================";
+static constexpr const char* THIN = "------------------------------------------------------------";
 
 // ===== UI Helpers =====
 void printHeader() {
@@ -118,7 +118,7 @@ void printGantt(const std::vector<GanttSegment>& timeline) {
     for (const auto& seg : timeline)
         std::cout << "| " << std::setw(8) << std::left
                   << (seg.pid == -1 ? "IDLE" : seg.processName) << " ";
-    "|\n";
+    std::cout << "|\n";
     for (const auto& seg : timeline)
         std::cout << std::setw(10) << std::left << seg.startTime;
     std::cout << std::setw(10) << std::left

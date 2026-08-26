@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #endif
 
 ProcessMonitor::ProcessMonitor()
@@ -38,10 +39,10 @@ void ProcessMonitor::readLinuxCpuTimes(unsigned long& total, unsigned long& idle
     std::getline(f, line);
     std::istringstream iss(line);
     std::string cpu;
-    unsigned long user, nice, system, idle, iowait, irq, softirq, steal;
-    iss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
-    total = user + nice + system + idle + iowait + irq + softirq + steal;
-    idle = idle + iowait;
+    unsigned long user = 0, nice = 0, system = 0, idleTime = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
+    iss >> cpu >> user >> nice >> system >> idleTime >> iowait >> irq >> softirq >> steal;
+    total = user + nice + system + idleTime + iowait + irq + softirq + steal;
+    idle = idleTime + iowait;
 }
 
 ProcessInfo ProcessMonitor::parseLinuxProcStat(int pid) {
@@ -205,12 +206,22 @@ std::vector<ProcessInfo> ProcessMonitor::getWindowsProcesses() {
         ProcessInfo info;
         info.pid = pids[i];
 
-        char nameBuf[MAX_PATH];
+        // FIX: Use wide-character API to handle Unicode process names correctly
+        wchar_t nameBuf[MAX_PATH];
         DWORD nameLen = MAX_PATH;
-        if (QueryFullProcessImageNameA(hProc, 0, nameBuf, &nameLen)) {
-            std::string full(nameBuf);
-            size_t pos = full.find_last_of("\\/");
-            info.name = (pos != std::string::npos) ? full.substr(pos + 1) : full;
+        if (QueryFullProcessImageNameW(hProc, 0, nameBuf, &nameLen)) {
+            std::wstring full(nameBuf);
+            size_t pos = full.find_last_of(L"\\/");
+            std::wstring wname = (pos != std::wstring::npos) ? full.substr(pos + 1) : full;
+            // Convert UTF-16 to UTF-8 for storage
+            int sz = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            if (sz > 0) {
+                std::string narrow(sz - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, &narrow[0], sz, nullptr, nullptr);
+                info.name = narrow;
+            } else {
+                info.name = "pid_" + std::to_string(pids[i]);
+            }
         } else {
             info.name = "pid_" + std::to_string(pids[i]);
         }
@@ -232,9 +243,25 @@ std::vector<ProcessInfo> ProcessMonitor::getWindowsProcesses() {
 
         DWORD exitCode;
         info.state = (GetExitCodeProcess(hProc, &exitCode) && exitCode == STILL_ACTIVE) ? 'R' : 'Z';
-        info.threadCount = 1;
-        info.priority = 0;
 
+        // Get actual thread count from snapshot
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (hSnap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te;
+            te.dwSize = sizeof(te);
+            int threadCount = 0;
+            if (Thread32First(hSnap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pids[i]) ++threadCount;
+                } while (Thread32Next(hSnap, &te));
+            }
+            CloseHandle(hSnap);
+            info.threadCount = threadCount > 0 ? threadCount : 1;
+        } else {
+            info.threadCount = 1;
+        }
+
+        info.priority = 0;
         procs.push_back(info);
         CloseHandle(hProc);
     }
@@ -287,7 +314,9 @@ int ProcessMonitor::getProcessCount() {
 }
 
 int ProcessMonitor::getTotalThreads() {
-    return 0;
+    int total = 0;
+    for (const auto& p : getProcesses()) total += p.threadCount;
+    return total;
 }
 
 void ProcessMonitor::takeSnapshot() {

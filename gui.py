@@ -1,18 +1,56 @@
 """
-Real-Time CPU Scheduling & Process Optimization System
-======================================================
+Real-Time CPU Scheduling & Process Optimization System  v1.0
+=============================================================
 Collects real OS process data, detects bottlenecks, applies safe
 optimizations (priority adjustment), and measures Before/After results.
+
+Features
+--------
+- Live process table with search/filter
+- 5 scheduling algorithms: FCFS, SJF, SRTF, Round Robin, Priority
+- Gantt chart with actual preemptive segments
+- Multi-metric radar chart for algorithm comparison
+- Algorithm weight editor (customize optimization scoring)
+- Simulation mode (custom process input)
+- CSV/JSON export
+- Keyboard shortcuts: F5=Scan, F6=Schedule, Ctrl+O=Optimize, Ctrl+Q=Quit
+
+Keyboard shortcuts
+------------------
+  F5          Refresh System Scan
+  F6          Run Scheduling Analysis
+  Ctrl+O      Optimize System
+  Ctrl+E      Export results (CSV)
+  Ctrl+Q      Quit
 """
 
 import tkinter as tk
-from tkinter import ttk, scrolledtext
-import threading, ctypes, os, datetime, math, statistics, time, sys
+from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
+import threading
+import ctypes
+import os
+import csv
+import json
+import datetime
+import math
+import time
+import sys
 
 import psutil
 
 import matplotlib
 matplotlib.use("TkAgg")
+
+# Enable high-DPI awareness on Windows to prevent canvas blur/clipping
+try:
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
+
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
@@ -508,7 +546,17 @@ class SchedulingGUI(tk.Tk):
             pass
         self.after(2000, self._sample_loop)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # ── Keyboard shortcuts ────────────────────────────────────────────────
+        self.bind("<F5>",          lambda _: self._scan())
+        self.bind("<F6>",          lambda _: self._sched())
+        self.bind("<Control-o>",   lambda _: self._optimize())
+        self.bind("<Control-e>",   lambda _: self._export_csv())
+        self.bind("<Control-q>",   lambda _: self.quit())
+        self.bind("<Control-w>",   lambda _: self._edit_weights())
+
         self.log("System initialized. Ready for workload analysis.", "info")
+        self.log("Shortcuts: F5=Scan  F6=Schedule  Ctrl+O=Optimize  Ctrl+E=Export  Ctrl+W=Weights", "debug")
 
     def _styles(self):
         s = ttk.Style(self); s.theme_use("clam")
@@ -707,28 +755,59 @@ class SchedulingGUI(tk.Tk):
 
         self.nb = ttk.Notebook(body, style="Custom.TNotebook")
         self.nb.pack(fill="both", expand=True, padx=20, pady=20)
-        self._tab_processes(); self._tab_analysis(); self._tab_scheduling(); self._tab_optimization(); self._tab_log()
-
-
+        self._tab_processes()
+        self._tab_simulation()
+        self._tab_analysis()
+        self._tab_scheduling()
+        self._tab_optimization()
+        self._tab_log()
 
     def _build_control(self, parent):
         pass
 
-
     # ── Tabs ───────────────────────────────────────────────────────────────
     def _tab_processes(self):
         f = tk.Frame(self.nb, bg=BG_DARK); self.nb.add(f, text="  Processes  ")
-        cols = ("PID","Name","State","CPU%","Memory MB","Priority","Threads","Ctx Switches")
+
+        # ── Toolbar row ──────────────────────────────────────────────────────
+        toolbar = tk.Frame(f, bg=BG_PANEL, highlightbackground=BORDER, highlightthickness=1)
+        toolbar.pack(fill="x", padx=8, pady=(8, 0))
+
+        tk.Label(toolbar, text="Search:", bg=BG_PANEL, fg=FG_SECONDARY,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(10, 4), pady=6)
+        self._proc_search_var = tk.StringVar()
+        self._proc_search_var.trace_add("write", lambda *_: self._filter_tree())
+        search_entry = tk.Entry(toolbar, textvariable=self._proc_search_var,
+                                bg=BG_INPUT, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
+                                relief="flat", font=("Segoe UI", 10), width=24)
+        search_entry.pack(side="left", padx=(0, 8), pady=6, ipady=3)
+
+        tk.Button(toolbar, text="✕ Clear", command=lambda: self._proc_search_var.set(""),
+                  bg=BG_INPUT, fg=FG_SECONDARY, relief="flat", font=("Segoe UI", 9),
+                  padx=6, pady=4, cursor="hand2").pack(side="left")
+
+        self._proc_count_lbl = tk.Label(toolbar, text="", bg=BG_PANEL, fg=FG_DIM,
+                                        font=("Segoe UI", 9))
+        self._proc_count_lbl.pack(side="left", padx=12)
+
+        tk.Button(toolbar, text="⬇ Export CSV", command=self._export_csv,
+                  bg=BG_INPUT, fg=ACCENT_GREEN, relief="flat", font=("Segoe UI", 9, "bold"),
+                  padx=10, pady=4, cursor="hand2").pack(side="right", padx=8, pady=5)
+
+        # ── Treeview ─────────────────────────────────────────────────────────
+        cols = ("PID", "Name", "State", "CPU%", "Memory MB", "Priority", "Threads", "Ctx Switches")
         headers = {"PID": "PID", "Name": "Name", "State": "State", "CPU%": "CPU %",
                    "Memory MB": "Mem (MB)", "Priority": "Priority",
                    "Threads": "Threads", "Ctx Switches": "Ctx Sw"}
         widths = {"PID": 70, "State": 64, "CPU%": 80, "Memory MB": 100,
                   "Priority": 110, "Threads": 84, "Ctx Switches": 92}
+
         tf = tk.Frame(f, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
-        tf.pack(fill="both", expand=True, padx=8, pady=8)
+        tf.pack(fill="both", expand=True, padx=8, pady=(4, 8))
         self.ptree = ttk.Treeview(tf, columns=cols, show="headings", style="Custom.Treeview")
         for c in cols:
-            self.ptree.heading(c, text=headers[c], anchor="w")
+            self.ptree.heading(c, text=headers[c], anchor="w",
+                               command=lambda col=c: self._sort_tree(col))
             if c == "Name":
                 self.ptree.column(c, width=230, minwidth=180, anchor="w", stretch=True)
             else:
@@ -740,6 +819,260 @@ class SchedulingGUI(tk.Tk):
         hsb.pack(side="bottom", fill="x")
         vsb.pack(side="right", fill="y")
         self.ptree.pack(side="left", fill="both", expand=True)
+        self._sort_col = "CPU%"
+        self._sort_reverse = True
+
+    def _tab_simulation(self):
+        """Simulation Mode tab: allows manual process definition and benchmark execution."""
+        f = tk.Frame(self.nb, bg=BG_DARK)
+        self.nb.add(f, text="  Simulation Mode  ")
+        f.rowconfigure(1, weight=1)
+        f.columnconfigure(0, weight=1)
+
+        # Header banner
+        head_card = tk.Frame(f, bg=BG_PANEL, highlightbackground=BORDER, highlightthickness=1)
+        head_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        tk.Label(head_card, text="CUSTOM WORKLOAD SIMULATOR", bg=BG_PANEL, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 11, "bold")).pack(side="left", padx=12, pady=8)
+        tk.Label(head_card, text="Define custom processes to analyze and compare scheduling algorithms without scanning live OS processes.",
+                 bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9)).pack(side="left", padx=8, pady=8)
+
+        # Main layout
+        body_frame = tk.Frame(f, bg=BG_DARK)
+        body_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
+        body_frame.columnconfigure(0, weight=1, minsize=350)
+        body_frame.columnconfigure(1, weight=2)
+        body_frame.rowconfigure(0, weight=1)
+
+        # Left panel: Input form & Presets
+        left_box = tk.Frame(body_frame, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        left_box.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        tk.Label(left_box, text="PROCESS INPUT", bg=BG_CARD, fg=ACCENT_GREEN,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+
+        form = tk.Frame(left_box, bg=BG_CARD)
+        form.pack(fill="x", padx=14, pady=4)
+        form.columnconfigure(1, weight=1)
+
+        self._sim_name_var = tk.StringVar(value="P1")
+        self._sim_arr_var  = tk.DoubleVar(value=0.0)
+        self._sim_burst_var= tk.DoubleVar(value=5.0)
+        self._sim_prio_var = tk.IntVar(value=1)
+        self._sim_quantum_var = tk.DoubleVar(value=2.0)
+
+        inputs = [
+            ("Process Name:", self._sim_name_var, "entry"),
+            ("Arrival Time:", self._sim_arr_var,  "spin_float"),
+            ("Burst Time:",   self._sim_burst_var,"spin_float"),
+            ("Priority (1=High):", self._sim_prio_var, "spin_int"),
+        ]
+
+        for r, (lbl, var, typ) in enumerate(inputs):
+            tk.Label(form, text=lbl, bg=BG_CARD, fg=FG_SECONDARY,
+                     font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w", pady=4)
+            if typ == "entry":
+                e = tk.Entry(form, textvariable=var, bg=BG_INPUT, fg=FG_PRIMARY,
+                             insertbackground=FG_PRIMARY, relief="flat", font=("Segoe UI", 10))
+            elif typ == "spin_float":
+                e = tk.Spinbox(form, textvariable=var, from_=0.0, to=999.0, increment=0.5,
+                               bg=BG_INPUT, fg=FG_PRIMARY, buttonbackground=BG_PANEL, relief="flat", font=("Segoe UI", 10))
+            else:
+                e = tk.Spinbox(form, textvariable=var, from_=1, to=99, increment=1,
+                               bg=BG_INPUT, fg=FG_PRIMARY, buttonbackground=BG_PANEL, relief="flat", font=("Segoe UI", 10))
+            e.grid(row=r, column=1, sticky="ew", padx=(8, 0), pady=4)
+
+        # RR Quantum input
+        q_frame = tk.Frame(left_box, bg=BG_CARD)
+        q_frame.pack(fill="x", padx=14, pady=8)
+        tk.Label(q_frame, text="Round Robin Quantum:", bg=BG_CARD, fg=ACCENT_AMBER,
+                 font=("Segoe UI", 9, "bold")).pack(side="left")
+        tk.Spinbox(q_frame, textvariable=self._sim_quantum_var, from_=0.5, to=50.0, increment=0.5,
+                   width=6, bg=BG_INPUT, fg=FG_PRIMARY, buttonbackground=BG_PANEL, relief="flat", font=("Segoe UI", 10)).pack(side="right")
+
+        # Action buttons row
+        btn_row = tk.Frame(left_box, bg=BG_CARD)
+        btn_row.pack(fill="x", padx=14, pady=(6, 10))
+        tk.Button(btn_row, text="+ Add Process", command=self._sim_add_proc,
+                  bg=ACCENT_BLUE, fg="#ffffff", relief="flat", font=("Segoe UI", 9, "bold"),
+                  padx=10, pady=5, cursor="hand2").pack(side="left")
+        tk.Button(btn_row, text="✕ Remove", command=self._sim_remove_proc,
+                  bg=BG_INPUT, fg=ACCENT_RED, relief="flat", font=("Segoe UI", 9),
+                  padx=8, pady=5, cursor="hand2").pack(side="left", padx=4)
+        tk.Button(btn_row, text="↺ Clear All", command=self._sim_clear_procs,
+                  bg=BG_INPUT, fg=FG_SECONDARY, relief="flat", font=("Segoe UI", 9),
+                  padx=8, pady=5, cursor="hand2").pack(side="left")
+
+        # Presets Section
+        tk.Label(left_box, text="PRESET SCENARIOS", bg=BG_CARD, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(8, 4))
+        presets_frame = tk.Frame(left_box, bg=BG_CARD)
+        presets_frame.pack(fill="x", padx=14, pady=(0, 10))
+
+        presets = [
+            ("⚡ Textbook Classic (4 processes)", self._load_preset_textbook),
+            ("⚡ Convoy Effect (FCFS worst case)", self._load_preset_convoy),
+            ("⚡ Priority Mix (High vs Low)",      self._load_preset_priority),
+            ("⚡ Preemption Stress (SRTF vs RR)", self._load_preset_preemption),
+        ]
+        for name, cmd in presets:
+            tk.Button(presets_frame, text=name, command=cmd,
+                      bg=BG_INPUT, fg=FG_PRIMARY, relief="flat", font=("Segoe UI", 9),
+                      anchor="w", padx=8, pady=4, cursor="hand2").pack(fill="x", pady=2)
+
+        # Right panel: Process List Table & Run Button
+        right_box = tk.Frame(body_frame, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        right_box.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        right_box.rowconfigure(1, weight=1)
+        right_box.columnconfigure(0, weight=1)
+
+        rtop = tk.Frame(right_box, bg=BG_CARD)
+        rtop.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 6))
+        tk.Label(rtop, text="SIMULATION PROCESS QUEUE", bg=BG_CARD, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        self._sim_queue_count = tk.Label(rtop, text="0 processes", bg=BG_CARD, fg=FG_DIM, font=("Segoe UI", 9))
+        self._sim_queue_count.pack(side="right")
+
+        cols = ("PID", "Name", "Arrival", "Burst", "Priority")
+        self.sim_tree = ttk.Treeview(right_box, columns=cols, show="headings", style="Custom.Treeview")
+        for c in cols:
+            self.sim_tree.heading(c, text=c, anchor="center")
+            self.sim_tree.column(c, width=70, anchor="center")
+        self.sim_tree.column("Name", width=180, anchor="w")
+        self.sim_tree.grid(row=1, column=0, sticky="nsew", padx=14, pady=4)
+
+        # Bottom execute bar
+        rbot = tk.Frame(right_box, bg=BG_CARD)
+        rbot.grid(row=2, column=0, sticky="ew", padx=14, pady=12)
+        tk.Button(rbot, text="▶  RUN SIMULATION ON ALL 5 ALGORITHMS", command=self._run_custom_simulation,
+                  bg=ACCENT_GREEN, fg="#0b0b12", relief="flat", font=("Segoe UI", 10, "bold"),
+                  padx=16, pady=8, cursor="hand2").pack(fill="x")
+
+        self.custom_procs = []
+        self._load_preset_textbook()
+
+    def _sim_add_proc(self):
+        name = self._sim_name_var.get().strip() or f"P{len(self.custom_procs)+1}"
+        try:
+            arr = float(self._sim_arr_var.get())
+            burst = max(0.1, float(self._sim_burst_var.get()))
+            prio = max(1, int(self._sim_prio_var.get()))
+        except Exception as e:
+            messagebox.showerror("Invalid Input", f"Please check process values: {e}")
+            return
+        pid = len(self.custom_procs) + 1
+        self.custom_procs.append({
+            'pid': pid, 'name': name, 'arrival': arr, 'burst': burst, 'priority': prio
+        })
+        self._refresh_sim_tree()
+        self._sim_name_var.set(f"P{len(self.custom_procs)+1}")
+
+    def _sim_remove_proc(self):
+        sel = self.sim_tree.selection()
+        if not sel:
+            return
+        idx = self.sim_tree.index(sel[0])
+        if 0 <= idx < len(self.custom_procs):
+            del self.custom_procs[idx]
+            for i, p in enumerate(self.custom_procs):
+                p['pid'] = i + 1
+            self._refresh_sim_tree()
+
+    def _sim_clear_procs(self):
+        self.custom_procs.clear()
+        self._refresh_sim_tree()
+
+    def _refresh_sim_tree(self):
+        for i in self.sim_tree.get_children():
+            self.sim_tree.delete(i)
+        for p in self.custom_procs:
+            self.sim_tree.insert("", "end", values=(
+                p['pid'], p['name'], f"{p['arrival']:.1f}", f"{p['burst']:.1f}", p['priority']
+            ))
+        if hasattr(self, '_sim_queue_count'):
+            self._sim_queue_count.configure(text=f"{len(self.custom_procs)} processes")
+
+    def _load_preset_textbook(self):
+        self.custom_procs = [
+            {'pid': 1, 'name': 'P1 (Compute)', 'arrival': 0.0, 'burst': 8.0, 'priority': 2},
+            {'pid': 2, 'name': 'P2 (Web Svc)', 'arrival': 1.0, 'burst': 4.0, 'priority': 1},
+            {'pid': 3, 'name': 'P3 (Worker)',  'arrival': 2.0, 'burst': 2.0, 'priority': 3},
+            {'pid': 4, 'name': 'P4 (UI Task)', 'arrival': 3.0, 'burst': 1.0, 'priority': 2},
+        ]
+        self._sim_quantum_var.set(2.0)
+        self._refresh_sim_tree()
+
+    def _load_preset_convoy(self):
+        self.custom_procs = [
+            {'pid': 1, 'name': 'Heavy Batch', 'arrival': 0.0, 'burst': 28.0, 'priority': 3},
+            {'pid': 2, 'name': 'Quick Task 1', 'arrival': 1.0, 'burst': 2.0,  'priority': 1},
+            {'pid': 3, 'name': 'Quick Task 2', 'arrival': 2.0, 'burst': 1.5,  'priority': 1},
+            {'pid': 4, 'name': 'Quick Task 3', 'arrival': 3.0, 'burst': 1.0,  'priority': 1},
+        ]
+        self._sim_quantum_var.set(2.0)
+        self._refresh_sim_tree()
+
+    def _load_preset_priority(self):
+        self.custom_procs = [
+            {'pid': 1, 'name': 'Background Sync', 'arrival': 0.0, 'burst': 6.0, 'priority': 4},
+            {'pid': 2, 'name': 'Critical Audio',   'arrival': 1.0, 'burst': 3.0, 'priority': 1},
+            {'pid': 3, 'name': 'Renderer',         'arrival': 2.0, 'burst': 5.0, 'priority': 2},
+            {'pid': 4, 'name': 'Indexing Daemon',  'arrival': 3.0, 'burst': 8.0, 'priority': 5},
+        ]
+        self._sim_quantum_var.set(2.0)
+        self._refresh_sim_tree()
+
+    def _load_preset_preemption(self):
+        self.custom_procs = [
+            {'pid': 1, 'name': 'Long Job',     'arrival': 0.0, 'burst': 12.0, 'priority': 3},
+            {'pid': 2, 'name': 'Short Burst 1', 'arrival': 2.0, 'burst': 2.0,  'priority': 2},
+            {'pid': 3, 'name': 'Short Burst 2', 'arrival': 4.0, 'burst': 1.0,  'priority': 1},
+            {'pid': 4, 'name': 'Short Burst 3', 'arrival': 6.0, 'burst': 3.0,  'priority': 2},
+        ]
+        self._sim_quantum_var.set(2.0)
+        self._refresh_sim_tree()
+
+    def _run_custom_simulation(self):
+        if not self.custom_procs:
+            messagebox.showwarning("No Processes", "Add at least one process to the simulation queue.")
+            return
+
+        import copy
+        q = max(0.1, self._sim_quantum_var.get())
+        sched = []
+        for i, p in enumerate(self.custom_procs):
+            sched.append({
+                'pid': i + 1,
+                'name': p['name'],
+                'arrival': float(p['arrival']),
+                'burst': float(p['burst']),
+                'remaining': float(p['burst']),
+                'priority': int(p['priority']),
+                'first_start': -1.0,
+                'completion': 0.0,
+                'turnaround': 0.0,
+                'waiting': 0.0,
+                'response': 0.0,
+            })
+
+        fns = {
+            'FCFS': sched_fcfs,
+            'SJF': sched_sjf,
+            'SRTF': sched_srtf,
+            f'Round Robin (Q={q:g})': lambda procs: sched_rr(copy.deepcopy(procs), q),
+            'Priority Scheduling': sched_priority
+        }
+        results = {}
+        for name, fn in fns.items():
+            ps, sw, g, tb, tt = fn(copy.deepcopy(sched))
+            m = calc_sched_metrics(ps, sw, tb, tt)
+            results[name] = {'rows': ps, 'metrics': m, 'gantt': g}
+
+        self.sched_results = results
+        self._render_sched_review()
+        self.log(f"Simulated {len(self.custom_procs)} custom processes across all algorithms (RR Q={q:g})", "ok")
+        self.nb.select(3)
+
 
     def _refit_all_charts(self):
         """Corrective second pass: re-fit charts after layout/scrollbars settle.
@@ -751,7 +1084,7 @@ class SchedulingGUI(tk.Tk):
                 (self.opt_canvas, self.opt_fig, False),
                 (self.trend_canvas, self.trend_fig, False),
                 (self.top_canvas, self.top_fig, True),
-                (self.comparison_canvas, self.comparison_fig, True),
+                (self.comparison_canvas, self.comparison_fig, False),
                 (self.gantt_canvas, self.gantt_fig, True)):
             try:
                 self._fit_figure(canvas, fig, 0, 0, tight)
@@ -986,40 +1319,41 @@ class SchedulingGUI(tk.Tk):
         self._set_empty(self.sched_table, "Run the analysis to compare algorithms.")
         self._set_empty(self.sched_notes_frame, "Notes appear after analysis.")
 
-        # Timeline charts card
-        charts_card = tk.Frame(inner, bg=BG_CARD, highlightbackground=BORDER,
-                               highlightthickness=1)
-        charts_card.pack(fill="x", padx=12, pady=(10, 14))
-        ch = tk.Frame(charts_card, bg=BG_CARD)
-        ch.pack(fill="both", expand=True, padx=8, pady=8)
-        ch.columnconfigure(0, weight=1, uniform="sch")
-        ch.columnconfigure(1, weight=2, uniform="sch")
-        comparison_frame = tk.Frame(ch, bg=BG_CARD, height=250)
-        comparison_frame.grid(row=0, column=0, sticky="nsew")
-        comparison_frame.pack_propagate(False)
-        gantt_frame = tk.Frame(ch, bg=BG_CARD, height=290)
-        gantt_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        gantt_frame.pack_propagate(False)
-
-        tk.Label(comparison_frame, text="ALGORITHM PERFORMANCE", bg=BG_CARD, fg=ACCENT_CYAN,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
-        self.comparison_fig = Figure(figsize=(5, 3), dpi=100, facecolor=BG_CARD)
+        # Card 1: Algorithm Performance & Ranking (Full Width)
+        comp_card = tk.Frame(inner, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        comp_card.pack(fill="x", padx=12, pady=(10, 0))
+        comp_hdr = tk.Frame(comp_card, bg=BG_CARD)
+        comp_hdr.pack(fill="x", padx=14, pady=(10, 2))
+        tk.Label(comp_hdr, text="ALGORITHM PERFORMANCE & RANKING", bg=BG_CARD, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        comp_body = tk.Frame(comp_card, bg=BG_CARD, height=220)
+        comp_body.pack(fill="x", padx=8, pady=(2, 6))
+        comp_body.pack_propagate(False)
+        self.comparison_fig = Figure(figsize=(7, 2.2), dpi=100, facecolor=BG_CARD)
         self.comparison_ax = self.comparison_fig.add_subplot(111)
         self.comparison_ax.set_facecolor(BG_CARD)
-        self.comparison_canvas = FigureCanvasTkAgg(self.comparison_fig, comparison_frame)
+        self.comparison_canvas = FigureCanvasTkAgg(self.comparison_fig, comp_body)
         self.comparison_canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._responsive_figure(self.comparison_canvas, self.comparison_fig)
+        self._responsive_figure(self.comparison_canvas, self.comparison_fig, use_tight=False)
 
-        tk.Label(gantt_frame, text="RECOMMENDED SCHEDULE TIMELINE", bg=BG_CARD, fg=ACCENT_CYAN,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
-        self.gantt_fig = Figure(figsize=(12,3), dpi=100, facecolor=BG_CARD)
+        # Card 2: Recommended Schedule Timeline (Full Width)
+        gantt_card = tk.Frame(inner, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        gantt_card.pack(fill="x", padx=12, pady=(10, 14))
+        gantt_hdr = tk.Frame(gantt_card, bg=BG_CARD)
+        gantt_hdr.pack(fill="x", padx=14, pady=(10, 2))
+        tk.Label(gantt_hdr, text="RECOMMENDED SCHEDULE TIMELINE (GANTT)", bg=BG_CARD, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        gantt_body = tk.Frame(gantt_card, bg=BG_CARD, height=280)
+        gantt_body.pack(fill="x", padx=8, pady=(2, 6))
+        gantt_body.pack_propagate(False)
+        self.gantt_fig = Figure(figsize=(8, 2.7), dpi=100, facecolor=BG_CARD)
         self.gantt_ax = self.gantt_fig.add_subplot(111)
         self.gantt_ax.set_facecolor(BG_CARD)
         for sp in self.gantt_ax.spines.values(): sp.set_color(BORDER)
         self.gantt_ax.tick_params(colors=FG_SECONDARY, labelsize=8)
-        self.gantt_canvas = FigureCanvasTkAgg(self.gantt_fig, gantt_frame)
+        self.gantt_canvas = FigureCanvasTkAgg(self.gantt_fig, gantt_body)
         self.gantt_canvas.get_tk_widget().pack(fill="both", expand=True)
-        self._responsive_figure(self.gantt_canvas, self.gantt_fig)
+        self._responsive_figure(self.gantt_canvas, self.gantt_fig, use_tight=True)
 
     def _tab_optimization(self):
         f = tk.Frame(self.nb, bg=BG_DARK)
@@ -1125,14 +1459,15 @@ class SchedulingGUI(tk.Tk):
 
         # Chart 1 — Before vs After resource utilization
         ba_card, _ba_hdr, ba_body = section("BEFORE VS AFTER RESOURCE UTILIZATION",
-                                            "real measured averages", 235,
+                                            "real measured averages", 265,
                                             subtitle="Measured system utilization before and after the optimization attempt")
         self.opt_fig = Figure(figsize=(6, 2.6), dpi=100, facecolor=BG_CARD)
         self.opt_ax = self.opt_fig.add_subplot(111)
         self.opt_ax.set_facecolor(BG_CARD)
         for sp in self.opt_ax.spines.values():
             sp.set_color(BORDER)
-        self.opt_ax.tick_params(colors=FG_SECONDARY, labelsize=9)
+        self.opt_ax.set_xticks([])
+        self.opt_ax.set_yticks([])
         self.opt_canvas = FigureCanvasTkAgg(self.opt_fig, ba_body)
         self.opt_canvas.get_tk_widget().pack(fill="both", expand=True)
         self._responsive_figure(self.opt_canvas, self.opt_fig, use_tight=False)
@@ -1310,36 +1645,48 @@ class SchedulingGUI(tk.Tk):
         self._attach_trend_tooltip()
 
     def _responsive_figure(self, canvas, fig, use_tight=True):
-        """Redraw a matplotlib figure whenever its Tk widget is resized."""
+        """Redraw a matplotlib figure whenever its Tk container frame is resized."""
         widget = canvas.get_tk_widget()
+        frame = widget.master
         widget.configure(bg=BG_CARD, highlightthickness=0)
         state = {"job": None}
 
         def on_configure(event):
-            if event.width < 80 or event.height < 80:
+            w = frame.winfo_width()
+            h = frame.winfo_height()
+            if w < 60 or h < 40:
                 return
             if state["job"]:
-                widget.after_cancel(state["job"])
-            state["job"] = widget.after(
-                120, lambda: self._fit_figure(canvas, fig, event.width, event.height, use_tight))
+                frame.after_cancel(state["job"])
+            state["job"] = frame.after(
+                60, lambda: self._fit_figure(canvas, fig, w, h, use_tight))
 
-        widget.bind("<Configure>", on_configure)
+        frame.bind("<Configure>", on_configure)
 
     def _fit_figure(self, canvas, fig, width, height, use_tight):
         try:
             widget = canvas.get_tk_widget()
             frame = widget.master
-            w = frame.winfo_width() or widget.winfo_width() or width
-            h = frame.winfo_height() or widget.winfo_height() or height
-            if w < 80 or h < 80:
+            w = frame.winfo_width()
+            h = frame.winfo_height()
+            if w < 60 or h < 40:
+                w = width
+                h = height
+            if w < 60 or h < 40:
                 return False
-            # Minimums in pixels (fig.dpi varies with Windows display scaling)
-            w = max(220.0, w - 14)
-            h = max(130.0, h - 10)
-            fig.set_size_inches(w / fig.dpi, h / fig.dpi)
+            w = max(180, w - 8)
+            h = max(80, h - 6)
+            try:
+                widget.configure(width=w, height=h)
+            except Exception:
+                pass
+            fig.set_size_inches(w / fig.dpi, h / fig.dpi, forward=True)
             if use_tight:
-                fig.tight_layout()
-            canvas.draw()
+                try:
+                    fig.tight_layout(pad=1.2)
+                except Exception:
+                    pass
+            canvas.draw_idle()
             return True
         except Exception:
             return False
@@ -1351,7 +1698,7 @@ class SchedulingGUI(tk.Tk):
         if s:
             self.metric_vals["cpu"].configure(text="{:.1f}%".format(s.get('cpu_percent', 0.0)))
             self.metric_vals["mem"].configure(text="{:.1f}%".format(s.get('mem_percent', 0.0)))
-        pair = "{}% \u2192 {}%"
+        pair = "{:.1f}% \u2192 {:.1f}%"
         self.metric_subs["cpu"].configure(
             text=pair.format(self.before_stats['cpu'], self.after_stats['cpu']) if reviewed
             else "\u2014 no optimization run yet")
@@ -1591,14 +1938,29 @@ class SchedulingGUI(tk.Tk):
 
     def _tab_log(self):
         f = tk.Frame(self.nb, bg=BG_DARK); self.nb.add(f, text="  Log  ")
-        self.log_text = scrolledtext.ScrolledText(f, bg=BG_CARD, fg=FG_SECONDARY, font=("Consolas", 10),
-            insertbackground=FG_PRIMARY, borderwidth=0, highlightbackground=BORDER, highlightthickness=1, wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
-        self.log_text.tag_configure("time", foreground=FG_DIM)
-        self.log_text.tag_configure("info", foreground=ACCENT_CYAN)
-        self.log_text.tag_configure("ok", foreground=ACCENT_GREEN)
-        self.log_text.tag_configure("warn", foreground=ACCENT_AMBER)
-        self.log_text.tag_configure("err", foreground=ACCENT_RED)
+
+        # Toolbar for log tab
+        log_toolbar = tk.Frame(f, bg=BG_PANEL, highlightbackground=BORDER, highlightthickness=1)
+        log_toolbar.pack(fill="x", side="bottom")
+        tk.Button(log_toolbar, text="Clear Log", command=self._clear_log,
+                  bg=BG_INPUT, fg=FG_SECONDARY, relief="flat", font=("Segoe UI", 9),
+                  padx=10, pady=5, cursor="hand2").pack(side="right", padx=8, pady=4)
+        tk.Button(log_toolbar, text="Export Log", command=self._export_log,
+                  bg=BG_INPUT, fg=ACCENT_CYAN, relief="flat", font=("Segoe UI", 9),
+                  padx=10, pady=5, cursor="hand2").pack(side="right", pady=4)
+
+        self.log_text = scrolledtext.ScrolledText(f, bg=BG_CARD, fg=FG_SECONDARY,
+            font=("Consolas", 10), insertbackground=FG_PRIMARY, borderwidth=0,
+            highlightbackground=BORDER, highlightthickness=1, wrap="word")
+        self.log_text.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.log_text.tag_configure("time",   foreground=FG_DIM)
+        self.log_text.tag_configure("info",   foreground=ACCENT_CYAN)
+        self.log_text.tag_configure("ok",     foreground=ACCENT_GREEN)
+        self.log_text.tag_configure("warn",   foreground=ACCENT_AMBER)
+        self.log_text.tag_configure("err",    foreground=ACCENT_RED)
+        # FIX: 'action' tag was previously referenced as 'a' — undefined tag causes silent fallback
+        self.log_text.tag_configure("action", foreground=ACCENT_PURPLE)
+        self.log_text.tag_configure("debug",  foreground=FG_DIM)
 
     def log(self, msg, tag="info"):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -1610,30 +1972,95 @@ class SchedulingGUI(tk.Tk):
         self.status_lbl.configure(text=t, foreground=c)
 
     def _populate_tree(self):
-        for i in self.ptree.get_children(): self.ptree.delete(i)
-        for i, p in enumerate(self.processes):
+        """Populate the process treeview, respecting current search filter and sort."""
+        query = getattr(self, '_proc_search_var', None)
+        query = query.get().strip().lower() if query else ""
+
+        for i in self.ptree.get_children():
+            self.ptree.delete(i)
+
+        procs = list(self.processes)
+
+        # Sort
+        col = self._sort_col
+        rev = self._sort_reverse
+        numeric_cols = {"CPU%", "Memory MB", "Threads", "Ctx Switches", "PID"}
+        col_key = {
+            "PID":          lambda p: p['pid'],
+            "Name":         lambda p: p['name'].lower(),
+            "State":        lambda p: p['state'],
+            "CPU%":         lambda p: p['cpu'],
+            "Memory MB":    lambda p: p['mem_mb'],
+            "Priority":     lambda p: p['priority_name'],
+            "Threads":      lambda p: p['threads'],
+            "Ctx Switches": lambda p: p['ctx_switches'],
+        }
+        if col in col_key:
+            procs.sort(key=col_key[col], reverse=rev)
+
+        # Filter
+        visible = [p for p in procs
+                   if not query or query in p['name'].lower() or query in str(p['pid'])]
+
+        for p in visible:
             self.ptree.insert("", "end", values=(
                 p['pid'], p['name'], p['state'],
                 f"{p['cpu']:.1f}", f"{p['mem_mb']:.0f}",
                 p['priority_name'], p['threads'], f"{p['ctx_switches']:,}"
             ))
+
+        # Update count label
+        if hasattr(self, '_proc_count_lbl'):
+            if query:
+                self._proc_count_lbl.configure(
+                    text=f"{len(visible)} / {len(procs)} processes")
+            else:
+                self._proc_count_lbl.configure(text=f"{len(procs)} processes")
+
         self.ptree.bind("<Button-3>", self._show_context_menu)
+
+    def _filter_tree(self):
+        """Re-populate treeview with current search filter applied."""
+        self._populate_tree()
+
+    def _sort_tree(self, col):
+        """Sort treeview by column; toggle direction on repeated click."""
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = (col in {"CPU%", "Memory MB", "Ctx Switches"})
+        self._populate_tree()
 
     def _show_context_menu(self, event):
         item = self.ptree.identify_row(event.y)
-        if not item: return
-        
-        menu = tk.Menu(self, tearoff=0, bg=BG_PANEL, fg=FG_PRIMARY, activebackground=ACCENT_BLUE, font=("Segoe UI", 10))
-        pid = int(self.ptree.item(item)['values'][0])
-        name = self.ptree.item(item)['values'][1]
-        
-        menu.add_command(label=f"Kill {name}", foreground=ACCENT_RED, command=lambda: self._kill_process(pid))
+        if not item:
+            return
+        self.ptree.selection_set(item)
+
+        menu = tk.Menu(self, tearoff=0, bg=BG_PANEL, fg=FG_PRIMARY,
+                       activebackground=ACCENT_BLUE, font=("Segoe UI", 10))
+        pid  = int(self.ptree.item(item)['values'][0])
+        name = str(self.ptree.item(item)['values'][1])
+
+        menu.add_command(label=f"PID {pid}  —  {name}", state="disabled")
         menu.add_separator()
-        menu.add_command(label="Set High Priority", command=lambda: self._quick_prio(pid, "High"))
-        menu.add_command(label="Set Normal Priority", command=lambda: self._quick_prio(pid, "Normal"))
-        menu.add_command(label="Set Low Priority", command=lambda: self._quick_prio(pid, "Low (Idle)"))
-        
+        menu.add_command(label="📋 Copy PID", command=lambda: self._copy_to_clipboard(str(pid)))
+        menu.add_separator()
+        menu.add_command(label="⬆  Set High Priority",    command=lambda: self._quick_prio(pid, "High"))
+        menu.add_command(label="◼  Set Normal Priority",  command=lambda: self._quick_prio(pid, "Normal"))
+        menu.add_command(label="⬇  Set Below Normal",     command=lambda: self._quick_prio(pid, "Below Normal"))
+        menu.add_command(label="⬇⬇ Set Low (Idle)",       command=lambda: self._quick_prio(pid, "Low (Idle)"))
+        menu.add_separator()
+        menu.add_command(label=f"✖  Terminate {name}",
+                         foreground=ACCENT_RED,
+                         command=lambda: self._kill_process(pid))
+
         menu.post(event.x_root, event.y_root)
+
+    def _copy_to_clipboard(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
 
     def _kill_process(self, pid):
         try:
@@ -1652,12 +2079,177 @@ class SchedulingGUI(tk.Tk):
             self.log(f"Failed to set priority for PID {pid}", "err")
 
     # ── Actions ────────────────────────────────────────────────────────────
+
+    def _export_csv(self):
+        """Export process table and scheduling results to a CSV file."""
+        if not self.processes:
+            messagebox.showwarning("No Data", "Run 'Refresh System Scan' first.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Process Data",
+            initialfile=f"cpu_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                # Process table
+                w.writerow(["=== PROCESS TABLE ==="])
+                w.writerow(["PID", "Name", "State", "CPU%", "Memory_MB",
+                             "Priority", "Threads", "Ctx_Switches"])
+                for p in self.processes:
+                    w.writerow([p['pid'], p['name'], p['state'],
+                                 f"{p['cpu']:.2f}", f"{p['mem_mb']:.1f}",
+                                 p['priority_name'], p['threads'], p['ctx_switches']])
+
+                # Scheduling results
+                if self.sched_results:
+                    w.writerow([])
+                    w.writerow(["=== SCHEDULING ANALYSIS ==="])
+                    w.writerow(["Algorithm", "Avg_Wait", "Avg_Response",
+                                 "Avg_Turnaround", "CPU_Util%", "Throughput",
+                                 "Context_Switches", "Fairness"])
+                    for name, data in self.sched_results.items():
+                        m = data['metrics']
+                        w.writerow([name, f"{m['avg_wait']:.4f}", f"{m['avg_resp']:.4f}",
+                                     f"{m['avg_tat']:.4f}", f"{m['cpu_util']:.2f}",
+                                     f"{m['throughput']:.4f}", m['switches'],
+                                     f"{m['fairness']:.4f}"])
+
+                # System stats
+                if self.sys_stats:
+                    w.writerow([])
+                    w.writerow(["=== SYSTEM SNAPSHOT ==="])
+                    s = self.sys_stats
+                    w.writerow(["CPU%", "Memory%", "Memory_Used_GB", "Memory_Total_GB"])
+                    w.writerow([f"{s['cpu_percent']:.1f}", f"{s['mem_percent']:.1f}",
+                                 f"{s['mem_used_gb']:.2f}", f"{s['mem_total_gb']:.2f}"])
+
+            self.log(f"Exported to {os.path.basename(path)}", "ok")
+            messagebox.showinfo("Export Complete",
+                                f"Data exported to:\n{path}")
+        except Exception as e:
+            self.log(f"Export failed: {e}", "err")
+            messagebox.showerror("Export Failed", str(e))
+
+    def _export_log(self):
+        """Save the activity log to a text file."""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Export Activity Log",
+            initialfile=f"cpu_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        )
+        if not path:
+            return
+        try:
+            content = self.log_text.get("1.0", "end")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self.log(f"Log exported to {os.path.basename(path)}", "ok")
+        except Exception as e:
+            self.log(f"Log export failed: {e}", "err")
+
+    def _clear_log(self):
+        """Clear the activity log."""
+        self.log_text.delete("1.0", "end")
+        self.log("Log cleared.", "debug")
+
+    def _edit_weights(self):
+        """Open a dialog to customize the 6 optimization metric weights."""
+        # Current weights (mirroring C++ OptimizationEngine defaults)
+        if not hasattr(self, '_opt_weights'):
+            self._opt_weights = {
+                "Waiting Time":        0.25,
+                "Response Time":       0.25,
+                "Turnaround Time":     0.15,
+                "CPU Utilization":     0.15,
+                "Fairness":            0.10,
+                "Context Switches":    0.10,
+            }
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Optimization Metric Weights")
+        dlg.configure(bg=BG_DARK)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="OPTIMIZATION WEIGHTS", bg=BG_DARK, fg=ACCENT_CYAN,
+                 font=("Segoe UI", 13, "bold")).pack(pady=(16, 4), padx=24)
+        tk.Label(dlg, text="Weights must sum to 1.0  ·  Lower-is-better: Wait, Response, Turnaround, Ctx Switches",
+                 bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9)).pack(pady=(0, 12), padx=24)
+
+        frame = tk.Frame(dlg, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        frame.pack(padx=24, pady=4, fill="x")
+
+        vars_ = {}
+        for i, (name, val) in enumerate(self._opt_weights.items()):
+            tk.Label(frame, text=name, bg=BG_CARD, fg=FG_SECONDARY,
+                     font=("Segoe UI", 10), width=22, anchor="w").grid(
+                row=i, column=0, padx=14, pady=6, sticky="w")
+            v = tk.DoubleVar(value=round(val, 4))
+            vars_[name] = v
+            e = tk.Entry(frame, textvariable=v, width=8, bg=BG_INPUT, fg=FG_PRIMARY,
+                         font=("Consolas", 11), relief="flat", insertbackground=FG_PRIMARY)
+            e.grid(row=i, column=1, padx=14, pady=6)
+
+        total_lbl = tk.Label(dlg, text="Sum = 1.00", bg=BG_DARK, fg=ACCENT_GREEN,
+                             font=("Consolas", 10, "bold"))
+        total_lbl.pack(pady=(8, 4))
+
+        def _update_total(*_):
+            try:
+                total = sum(v.get() for v in vars_.values())
+                color = ACCENT_GREEN if abs(total - 1.0) < 0.001 else ACCENT_RED
+                total_lbl.configure(text=f"Sum = {total:.4f}", fg=color)
+            except Exception:
+                total_lbl.configure(text="Sum = ?", fg=ACCENT_AMBER)
+
+        for v in vars_.values():
+            v.trace_add("write", _update_total)
+
+        def _apply():
+            try:
+                vals = {k: v.get() for k, v in vars_.items()}
+                total = sum(vals.values())
+                if abs(total - 1.0) > 0.005:
+                    messagebox.showerror("Invalid Weights",
+                                         f"Weights must sum to 1.0 (currently {total:.4f})",
+                                         parent=dlg)
+                    return
+                self._opt_weights = vals
+                self.log("Optimization weights updated. Re-run scheduling analysis to apply.", "action")
+                dlg.destroy()
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex), parent=dlg)
+
+        def _reset():
+            defaults = [0.25, 0.25, 0.15, 0.15, 0.10, 0.10]
+            for v, d in zip(vars_.values(), defaults):
+                v.set(d)
+
+        btn_row = tk.Frame(dlg, bg=BG_DARK)
+        btn_row.pack(pady=16, padx=24, fill="x")
+        tk.Button(btn_row, text="Reset Defaults", command=_reset,
+                  bg=BG_INPUT, fg=FG_SECONDARY, relief="flat",
+                  font=("Segoe UI", 10), padx=12, pady=6, cursor="hand2").pack(side="left")
+        tk.Button(btn_row, text="Apply", command=_apply,
+                  bg=ACCENT_BLUE, fg="#ffffff", relief="flat",
+                  font=("Segoe UI", 10, "bold"), padx=14, pady=6, cursor="hand2").pack(side="right")
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy,
+                  bg=BG_INPUT, fg=FG_SECONDARY, relief="flat",
+                  font=("Segoe UI", 10), padx=12, pady=6, cursor="hand2").pack(side="right", padx=8)
+
     def _run_as_admin(self):
         """Relaunch GUI with admin privileges via UAC."""
         try:
             script = os.path.abspath(sys.argv[0])
             python_exe = sys.executable
-            result = ctypes.windll.shell32.ShellExecuteW(None, "runas", python_exe, f'"{script}"', None, 1)
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", python_exe, f'"{script}"', None, 1)
             if result <= 32:
                 raise OSError(f"Windows returned error code {result}")
             self.log("Relaunching as admin...", "ok")
@@ -1889,27 +2481,89 @@ class SchedulingGUI(tk.Tk):
         threading.Thread(target=_do, daemon=True).start()
 
     def _draw_gantt(self):
+        """Render a true preemptive Gantt timeline using actual execution segments."""
         self._fit_figure(self.gantt_canvas, self.gantt_fig, 0, 0, True)
-        ax = self.gantt_ax; ax.clear(); ax.set_facecolor(BG_CARD)
-        if not self.sched_results: return
-        first = min(self.sched_results, key=lambda name: self.sched_results[name]['metrics']['avg_wait'])
-        rows_all = self.sched_results[first]['rows']
-        rows = sorted(rows_all, key=lambda r: r['burst'], reverse=True)[:10]
-        rows = sorted(rows, key=lambda r: r['arrival'])
-        colors = ["#4fc3f7","#69f0ae","#ff4081","#ffd740","#b388ff","#ff5252","#00e5ff",
-                  "#76ff03","#ff6e40","#e040fb","#448aff","#64ffda","#ffab40","#7c4dff"]
-        for i, r in enumerate(rows):
-            ax.barh(i, r['burst'], left=r['arrival'], height=0.6, color=colors[i%len(colors)], alpha=0.85, edgecolor="#000", linewidth=0.5)
-            if r['burst'] >= max(rr['burst'] for rr in rows) * 0.05:
-                ax.text((r['arrival']+r['completion'])/2, i, f"P{r['pid']}", ha="center", va="center", fontsize=7, fontweight="bold", color="#000")
-        ax.set_yticks(range(len(rows))); ax.set_yticklabels([r['name'][:16] for r in rows], fontsize=8, color=FG_SECONDARY)
-        ax.set_xlabel("Time", color=FG_SECONDARY, fontsize=8)
-        ax.set_title(f"Gantt \u2014 {first} (top {len(rows)} by burst)", color=ACCENT_CYAN, fontsize=10, fontweight="bold")
-        mx = max(r['completion'] for r in rows) if rows else 1
-        ax.set_xlim(0, mx*1.05); ax.grid(axis="x", color=BORDER, linewidth=0.3, alpha=0.5); ax.invert_yaxis()
-        for sp in ax.spines.values(): sp.set_color(BORDER)
+        ax = self.gantt_ax
+        ax.clear()
+        ax.set_facecolor(BG_CARD)
+        if not self.sched_results:
+            return
+
+        # Find best recommended algorithm name
+        best_name = None
+        if hasattr(self, 'sched_verdict'):
+            vtxt = self.sched_verdict.cget("text")
+            if "Recommended: " in vtxt:
+                best_name = vtxt.replace("Recommended: ", "").split("  (")[0].strip()
+        if not best_name or best_name not in self.sched_results:
+            best_name = min(self.sched_results, key=lambda name: self.sched_results[name]['metrics']['avg_wait'])
+
+        data = self.sched_results[best_name]
+        gantt = data.get('gantt', [])
+        if not gantt:
+            return
+
+        palette = [
+            "#4fc3f7", "#69f0ae", "#ff4081", "#ffd740", "#b388ff",
+            "#ff5252", "#00e5ff", "#76ff03", "#ff6e40", "#e040fb",
+            "#448aff", "#64ffda", "#ffab40", "#7c4dff"
+        ]
+
+        # Extract unique processes (excluding IDLE)
+        pids = []
+        for seg in gantt:
+            if seg['pid'] != -1 and seg['pid'] not in pids:
+                pids.append(seg['pid'])
+
+        pid_color = {pid: palette[i % len(palette)] for i, pid in enumerate(pids)}
+        pid_y = {pid: i for i, pid in enumerate(pids)}
+
+        has_idle = any(seg['pid'] == -1 for seg in gantt)
+        if has_idle:
+            pid_y[-1] = len(pids)
+            pid_color[-1] = "#475569"
+
+        max_time = max((seg['end'] for seg in gantt), default=1.0)
+        if max_time <= 0:
+            max_time = 1.0
+
+        for seg in gantt:
+            duration = seg['end'] - seg['start']
+            if duration <= 0:
+                continue
+            pid = seg['pid']
+            y = pid_y.get(pid, 0)
+            col = pid_color.get(pid, ACCENT_BLUE)
+            alpha = 0.50 if pid == -1 else 0.90
+            ax.barh(y, duration, left=seg['start'], height=0.6,
+                    color=col, alpha=alpha, edgecolor=BORDER, linewidth=0.6)
+            
+            # Label segment
+            if duration >= max_time * 0.04:
+                txt = "IDLE" if pid == -1 else f"P{pid}"
+                ax.text(seg['start'] + duration / 2.0, y, txt,
+                        ha="center", va="center", fontsize=7.5, fontweight="bold",
+                        color="#0b0b12" if pid != -1 else "#cbd5e1")
+
+        ytick_positions = [pid_y[p] for p in pids]
+        ytick_labels = [next((s['name'][:14] for s in gantt if s['pid'] == p), f"P{p}") for p in pids]
+        if has_idle:
+            ytick_positions.append(pid_y[-1])
+            ytick_labels.append("IDLE")
+
+        ax.set_yticks(ytick_positions)
+        ax.set_yticklabels(ytick_labels, fontsize=8, color=FG_SECONDARY)
+        ax.set_xlabel("Elapsed Time Units", color=FG_SECONDARY, fontsize=8)
+        ax.set_title(f"Gantt Schedule: {best_name} (Total Time: {max_time:.1f})",
+                     color=ACCENT_CYAN, fontsize=9.5, fontweight="bold", pad=8)
+        ax.set_xlim(0, max_time * 1.02)
+        ax.grid(axis="x", color=BORDER, linewidth=0.3, alpha=0.6)
+        ax.invert_yaxis()
+        for sp in ax.spines.values():
+            sp.set_color(BORDER)
         ax.tick_params(colors=FG_SECONDARY, labelsize=8)
-        self.gantt_fig.tight_layout(); self.gantt_canvas.draw()
+        self.gantt_fig.subplots_adjust(left=0.22, right=0.96, top=0.88, bottom=0.18)
+        self.gantt_canvas.draw()
 
     def _optimize(self):
         if not self.processes:
@@ -1927,7 +2581,7 @@ class SchedulingGUI(tk.Tk):
                 self.before_stats = before
                 self.before_snapshot = self._capture_snapshot()
 
-                self.after(0, lambda: self.log(f"BEFORE: CPU={before['cpu']:.1f}% MEM={before['mem']:.1f}%", "a"))
+                self.after(0, lambda: self.log(f"BEFORE: CPU={before['cpu']:.1f}% MEM={before['mem']:.1f}%", "action"))
 
                 # Apply optimizations
                 applied = 0
@@ -1963,88 +2617,165 @@ class SchedulingGUI(tk.Tk):
 
     def _render_sched_review(self):
         """Render a concise decision-oriented scheduling comparison."""
-        ranked = sorted(self.sched_results.items(), key=lambda item: item[1]['metrics']['avg_wait'])
-        best_name, best_data = ranked[0]
+        # Compute weighted score using user-configured weights (or defaults)
+        weights = getattr(self, '_opt_weights', {
+            "Waiting Time": 0.25, "Response Time": 0.25, "Turnaround Time": 0.15,
+            "CPU Utilization": 0.15, "Fairness": 0.10, "Context Switches": 0.10,
+        })
+
+        all_metrics = {name: data['metrics'] for name, data in self.sched_results.items()}
+        # Find best for normalization
+        best_wait  = min(m['avg_wait']  for m in all_metrics.values()) or 1e-9
+        best_resp  = min(m['avg_resp']  for m in all_metrics.values()) or 1e-9
+        best_tat   = min(m['avg_tat']   for m in all_metrics.values()) or 1e-9
+        best_cpu   = max(m['cpu_util']  for m in all_metrics.values()) or 1e-9
+        best_fair  = max(m['fairness']  for m in all_metrics.values()) or 1e-9
+        best_sw    = min(m['switches']  for m in all_metrics.values()) or 1
+
+        def _score(m):
+            sw = m['switches'] if m['switches'] > 0 else 1
+            return (
+                weights["Waiting Time"]     * min(best_wait  / max(m['avg_wait'],  1e-9), 1.0) * 100 +
+                weights["Response Time"]    * min(best_resp  / max(m['avg_resp'],  1e-9), 1.0) * 100 +
+                weights["Turnaround Time"]  * min(best_tat   / max(m['avg_tat'],   1e-9), 1.0) * 100 +
+                weights["CPU Utilization"]  * min(m['cpu_util']  / best_cpu,  1.0) * 100 +
+                weights["Fairness"]         * min(m['fairness']  / best_fair, 1.0) * 100 +
+                weights["Context Switches"] * min(best_sw / sw, 1.0) * 100
+            )
+
+        scored = sorted(
+            [(name, data, _score(data['metrics'])) for name, data in self.sched_results.items()],
+            key=lambda x: x[2], reverse=True
+        )
+        best_name, best_data, best_score = scored[0]
         best_metrics = best_data['metrics']
         rows = best_data['rows']
 
         self.sched_verdict.configure(
-            text="Recommended approach: {}".format(best_name), fg=ACCENT_GREEN)
+            text=f"Recommended: {best_name}  (score {best_score:.1f}/100)", fg=ACCENT_GREEN)
         self.sched_detail.configure(
-            text="Selected by lowest average waiting time across {} observed "
-                 "processes: {:.2f} time units. Timeline below shows the derived "
-                 "schedule \u2014 not live kernel control.".format(
-                     len(rows), best_metrics['avg_wait']))
+            text=f"Ranked by weighted score across 6 metrics on {len(rows)} observed processes. "
+                 f"Waiting: {best_metrics['avg_wait']:.2f}  "
+                 f"Response: {best_metrics['avg_resp']:.2f}  "
+                 f"Fairness: {best_metrics['fairness']:.4f}  "
+                 "· Timeline is a simulation — not live kernel control.")
 
         for child in self.sched_table.winfo_children():
             child.destroy()
-        headers = ["Algorithm", "Avg wait", "Response", "Fairness", "Switches"]
-        widths = [3, 1, 1, 1, 1]
-        for c, h in enumerate(headers):
-            self.sched_table.columnconfigure(c, weight=widths[c])
+
+        # Extended comparison table with 7 columns
+        col_defs = [
+            ("Algorithm",    "w", 3),
+            ("Score",        "e", 1),
+            ("Avg Wait",     "e", 1),
+            ("Response",     "e", 1),
+            ("Turnaround",   "e", 1),
+            ("CPU%",         "e", 1),
+            ("Fairness",     "e", 1),
+            ("Switches",     "e", 1),
+        ]
+        for c, (h, anchor, weight) in enumerate(col_defs):
+            self.sched_table.columnconfigure(c, weight=weight)
             tk.Label(self.sched_table, text=h, bg=BG_CARD, fg=FG_DIM,
                      font=("Segoe UI", 8, "bold")).grid(row=0, column=c,
-                                                        sticky="e" if c else "w",
+                                                        sticky=anchor,
+                                                        padx=(0 if c else 0, 8),
                                                         pady=(0, 4))
-        for r, (name, data) in enumerate(ranked, start=1):
+
+        for r, (name, data, score) in enumerate(scored, start=1):
             m = data['metrics']
             is_best = name == best_name
-            fg = ACCENT_GREEN if is_best else FG_SECONDARY
-            fnt_bold = ("Segoe UI", 10, "bold") if is_best else ("Segoe UI", 10)
+            fg  = ACCENT_GREEN if is_best else FG_SECONDARY
+            fnt = ("Segoe UI", 10, "bold") if is_best else ("Segoe UI", 10)
             mono = ("Consolas", 10, "bold") if is_best else ("Consolas", 10)
-            marker = "\u2605 " if is_best else "  "
-            tk.Label(self.sched_table, text="{}{}".format(marker, name.replace("Priority Scheduling", "Priority")),
-                     bg=BG_CARD, fg=fg, font=fnt_bold, anchor="w").grid(
-                row=r, column=0, sticky="w", pady=3)
-            for c, val in enumerate([m['avg_wait'], m['avg_resp'], m['fairness'],
-                                     "{:,}".format(m['switches'])], start=1):
-                fmt = "{:.4f}" if c == 3 else "{:.2f}"
-                tk.Label(self.sched_table, text=fmt.format(val) if c < 4 else val,
-                         bg=BG_CARD, fg=fg, font=mono).grid(row=r, column=c,
-                                                            sticky="e", pady=3)
+            marker = "★ " if is_best else "  "
+
+            short = name.replace("Priority Scheduling", "Priority").replace("Round Robin", "RR")
+            tk.Label(self.sched_table, text=f"{marker}{short}",
+                     bg=BG_CARD, fg=fg, font=fnt, anchor="w").grid(
+                row=r, column=0, sticky="w", pady=3, padx=(0, 8))
+
+            vals = [
+                f"{score:.1f}",
+                f"{m['avg_wait']:.2f}",
+                f"{m['avg_resp']:.2f}",
+                f"{m['avg_tat']:.2f}",
+                f"{m['cpu_util']:.1f}%",
+                f"{m['fairness']:.4f}",
+                f"{m['switches']:,}",
+            ]
+            for c, val in enumerate(vals, start=1):
+                tk.Label(self.sched_table, text=val,
+                         bg=BG_CARD, fg=fg, font=mono).grid(
+                    row=r, column=c, sticky="e", pady=3, padx=(0, 8))
 
         for child in self.sched_notes_frame.winfo_children():
             child.destroy()
         notes = [
-            (best_name + " minimizes average waiting time for this captured workload.",
+            (f"{best_name} has the highest weighted score ({best_score:.1f}/100) for this workload.",
              ACCENT_GREEN),
-            ("Round Robin remains preferable when consistent interactive response matters most.",
+            ("Round Robin is preferable when interactive response time matters most.",
              FG_SECONDARY),
-            ("Burst times are estimated from measured CPU activity; arrival times are simulated.",
+            ("Burst times are estimated from CPU activity; use Ctrl+W to adjust metric weights.",
              FG_DIM),
         ]
         for text, color in notes:
-            tk.Label(self.sched_notes_frame, text="\u2022 {}".format(text),
+            tk.Label(self.sched_notes_frame, text=f"• {text}",
                      bg=BG_CARD, fg=color, font=("Segoe UI", 9), wraplength=380,
                      justify="left", anchor="w").pack(anchor="w", pady=3)
 
-        self._draw_comparison_chart(ranked, best_name)
+        self._draw_comparison_chart(scored, best_name)
         self._draw_gantt()
-        self.log(f"Scheduling analysis complete: {best_name} recommended", "ok")
+        self.log(f"Scheduling analysis complete: {best_name} recommended (score {best_score:.1f})", "ok")
         self.set_status(f"Scheduling recommendation: {best_name}", ACCENT_GREEN)
-        self.nb.select(2)
+        self.nb.select(3)
         self.after(220, self._refit_all_charts)
 
-    def _draw_comparison_chart(self, ranked, recommended):
-        """Draw a readable comparison of the algorithms used in the report."""
-        self._fit_figure(self.comparison_canvas, self.comparison_fig, 0, 0, True)
-        ax = self.comparison_ax; ax.clear(); ax.set_facecolor(BG_CARD)
-        names = [name.replace("Priority Scheduling", "Priority") for name, _ in ranked]
-        waits = [data['metrics']['avg_wait'] for _, data in ranked]
-        colors = [ACCENT_GREEN if name == recommended else ACCENT_BLUE for name, _ in ranked]
-        bars = ax.barh(range(len(names)), waits, color=colors, alpha=0.9, height=0.62)
-        for bar, value in zip(bars, waits):
-            ax.text(value + max(waits, default=1) * 0.025, bar.get_y() + bar.get_height() / 2,
-                    f"{value:.2f}", va="center", fontsize=8, color=FG_PRIMARY, fontweight="bold")
-        ax.set_yticks(range(len(names))); ax.set_yticklabels(names, fontsize=8, color=FG_SECONDARY)
-        ax.set_xlabel("Average wait (lower is better)", color=FG_SECONDARY, fontsize=8)
-        ax.set_title("Waiting-time comparison", color=FG_PRIMARY, fontsize=10, fontweight="bold")
-        ax.set_xlim(0, max(waits, default=1) * 1.24)
-        ax.grid(axis="x", color=BORDER, linewidth=0.3, alpha=0.6)
-        ax.invert_yaxis()
-        for spine in ax.spines.values(): spine.set_color(BORDER)
+    def _draw_comparison_chart(self, scored, recommended):
+        """Render a clean, high-contrast algorithm ranking comparison chart."""
+        self._fit_figure(self.comparison_canvas, self.comparison_fig, 0, 0, False)
+        ax = self.comparison_ax
+        ax.clear()
+        ax.set_facecolor(BG_CARD)
+
+        # Ranked by score ascending for bottom-to-top display
+        raw_names = [item[0] for item in scored][::-1]
+        display_names = [
+            ("★ " + item[0].replace("Priority Scheduling", "Priority").replace("Round Robin", "RR")
+             if item[0] == recommended else
+             item[0].replace("Priority Scheduling", "Priority").replace("Round Robin", "RR"))
+            for item in scored
+        ][::-1]
+        scores = [item[2] for item in scored][::-1]
+        waits = [item[1]['metrics']['avg_wait'] for item in scored][::-1]
+        colors = [ACCENT_GREEN if name == recommended else ACCENT_BLUE for name in raw_names]
+
+        y_pos = list(range(len(display_names)))
+        bars = ax.barh(y_pos, scores, height=0.56, color=colors, alpha=0.90,
+                       edgecolor=BORDER, linewidth=0.8)
+
+        for bar, score, wait in zip(bars, scores, waits):
+            label_txt = f"{score:.1f} pts  (Wait: {wait:.2f})"
+            if score > 45:
+                ax.text(score - 1.5, bar.get_y() + bar.get_height() / 2, label_txt,
+                        va="center", ha="right", fontsize=8, color="#0b0b12", fontweight="bold")
+            else:
+                ax.text(score + 1.2, bar.get_y() + bar.get_height() / 2, label_txt,
+                        va="center", ha="left", fontsize=8, color=FG_PRIMARY, fontweight="bold")
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(display_names, fontsize=8.5, fontweight="bold", color=FG_PRIMARY)
+        ax.set_xlim(0, 105)
+        ax.set_xlabel("Overall Optimization Score (0-100 pts)", color=FG_SECONDARY, fontsize=8)
+        ax.set_title("Algorithm Performance & Ranking", color=ACCENT_CYAN,
+                     fontsize=9.5, fontweight="bold", pad=8)
+        ax.grid(axis="x", color=BORDER, linewidth=0.4, alpha=0.45)
+        ax.set_axisbelow(True)
+        for spine in ax.spines.values():
+            spine.set_color(BORDER)
         ax.tick_params(colors=FG_SECONDARY, labelsize=8)
-        self.comparison_fig.tight_layout(); self.comparison_canvas.draw()
+        self.comparison_fig.subplots_adjust(left=0.22, right=0.96, top=0.88, bottom=0.18)
+        self.comparison_canvas.draw()
 
     def _render_opt_review(self, before, after):
         """Render the optimization review from real measured before/after samples."""
@@ -2132,41 +2863,43 @@ class SchedulingGUI(tk.Tk):
         ax = self.opt_ax
         ax.clear()
         ax.set_facecolor(BG_CARD)
-        labels = ['CPU', 'Memory']
-        positions = [0, 1]
+        labels = ['CPU Utilization', 'Memory Utilization']
+        positions = [0.0, 1.0]
         before_values = [before['cpu'], before['mem']]
         after_values = [after['cpu'], after['mem']]
-        width = 0.32
-        bars_before = ax.bar([x - 0.19 for x in positions], before_values, width,
+        width = 0.20
+        bars_before = ax.bar([0.0 - 0.12, 1.0 - 0.12], before_values, width,
                              label='Before', color=ACCENT_PINK, alpha=0.92,
                              edgecolor=BORDER, linewidth=0.8)
-        bars_after = ax.bar([x + 0.19 for x in positions], after_values, width,
+        bars_after = ax.bar([0.0 + 0.12, 1.0 + 0.12], after_values, width,
                             label='After', color=ACCENT_GREEN, alpha=0.92,
                             edgecolor=BORDER, linewidth=0.8)
         for bars in (bars_before, bars_after):
             for bar in bars:
                 h = bar.get_height()
-                if h > 86:
-                    ax.text(bar.get_x() + bar.get_width() / 2, h - 4,
-                            "{:.1f}%".format(h), ha="center", va="top",
-                            fontsize=9, color="#0b0b12", fontweight="bold")
+                if h > 78:
+                    ax.text(bar.get_x() + bar.get_width() / 2, h - 6.0,
+                            f"{h:.1f}%", ha="center", va="top",
+                            fontsize=8.5, color="#0b0b12", fontweight="bold")
                 else:
-                    ax.text(bar.get_x() + bar.get_width() / 2, h + 2,
-                            "{:.1f}%".format(h), ha="center", va="bottom",
-                            fontsize=9, color=FG_PRIMARY, fontweight="bold")
-        ax.set_ylim(0, 100)
+                    ax.text(bar.get_x() + bar.get_width() / 2, h + 2.0,
+                            f"{h:.1f}%", ha="center", va="bottom",
+                            fontsize=8.5, color=FG_PRIMARY, fontweight="bold")
+        ax.set_xlim(-0.75, 1.75)
+        ax.set_ylim(0, 110)
         ax.set_yticks(range(0, 101, 20))
         ax.set_xticks(positions)
-        ax.set_xticklabels(labels, color=FG_PRIMARY, fontsize=10, fontweight="bold")
-        ax.set_ylabel("Utilization (%)", color=FG_SECONDARY, fontsize=9)
-        ax.grid(axis="y", color=BORDER, linewidth=0.6, alpha=0.45)
+        ax.set_xticklabels(labels, color=FG_PRIMARY, fontsize=9.5, fontweight="bold")
+        ax.set_ylabel("Utilization (%)", color=FG_SECONDARY, fontsize=8.5)
+        ax.grid(axis="y", color=BORDER, linewidth=0.5, alpha=0.45)
         ax.set_axisbelow(True)
         for spine in ax.spines.values():
             spine.set_color(BORDER)
-        ax.tick_params(colors=FG_SECONDARY, labelsize=9)
-        self.opt_fig.subplots_adjust(left=0.09, right=0.985, top=0.92, bottom=0.16)
-        ax.legend(loc="upper left", frameon=False, fontsize=9,
+        ax.tick_params(colors=FG_SECONDARY, labelsize=8.5)
+        ax.legend(loc="upper left", frameon=False, fontsize=8.5,
                   labelcolor=FG_PRIMARY, borderaxespad=0.4)
+        self.opt_fig.subplots_adjust(left=0.10, right=0.90, top=0.90, bottom=0.18)
+        self.opt_canvas.draw()
 
         def movement(d):
             if d > 0.5:
@@ -2338,7 +3071,7 @@ class SchedulingGUI(tk.Tk):
         else:
             self.log(f"Optimization review complete. CPU: {before['cpu']:.1f}% → {after['cpu']:.1f}%", "warn")
             self.set_status("Review complete — no material change", ACCENT_AMBER)
-        self.nb.select(3)
+        self.nb.select(4)
         self.opt_view.yview_moveto(0)
         self.after(220, self._refit_all_charts)
         cpu_col = ACCENT_GREEN if after['cpu'] < 50 else ACCENT_AMBER if after['cpu'] < 80 else ACCENT_RED
