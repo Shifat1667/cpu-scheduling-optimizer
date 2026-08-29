@@ -26,6 +26,12 @@ A high-performance, dual-architecture system for **real OS process monitoring**,
 
 ---
 
+## 🎥 Video Demo
+
+[Watch the demo video](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)
+
+---
+
 ## 🏛️ System Architecture
 
 ```
