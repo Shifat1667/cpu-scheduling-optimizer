@@ -30,11 +30,11 @@ A high-performance, dual-architecture system for **real OS process monitoring**,
 
 > **Faculty & Reviewer Quick Link:** Click the banner below or use the direct link to watch the complete video presentation and live system demonstration.
 
-[![Watch Live Demonstration Video](https://img.shields.io/badge/Google%20Drive-Watch%20Demo%20Video-blue?style=for-the-badge&logo=googledrive&logoColor=white)](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)
+[![Watch Live Demonstration Video](https://img.shields.io/badge/GitHub-Watch%20Demo%20Video-blue?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Shifat1667/cpu-scheduling-optimizer/releases/tag/v1.0.0)
 
 ### 🔗 Direct Video Link
 
-👉 **[Click Here to Open / Watch the Full Video on Google Drive](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)**
+👉 **[Click Here to Download / Watch the Full Video](https://github.com/Shifat1667/cpu-scheduling-optimizer/releases/tag/v1.0.0)**
 
 ---
 
