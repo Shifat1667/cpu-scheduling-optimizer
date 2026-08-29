@@ -26,9 +26,15 @@ A high-performance, dual-architecture system for **real OS process monitoring**,
 
 ---
 
-## 🎥 Video Demo
+## 🎥 Project Video Presentation & Live Demonstration
 
-[Watch the demo video](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)
+> **Faculty & Reviewer Quick Link:** Click the banner below or use the direct link to watch the complete video presentation and live system demonstration.
+
+[![Watch Live Demonstration Video](https://img.shields.io/badge/Google%20Drive-Watch%20Demo%20Video-blue?style=for-the-badge&logo=googledrive&logoColor=white)](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)
+
+### 🔗 Direct Video Link
+
+👉 **[Click Here to Open / Watch the Full Video on Google Drive](https://drive.google.com/file/d/14k_g3GZL0QWpBVNdwlRD1pVMxIuo9IZp/view?usp=drive_link)**
 
 ---
 
